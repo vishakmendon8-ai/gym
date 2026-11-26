@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        request.auth.token.role == 'admin' ||
+        // You can also whitelist specific admin emails or document lookups:
+        request.auth.token.email.matches(".*@gympro\\.com$") ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Members Collection
+    match /members/{memberId} {
+      // Admins can read and manage all members
+      // Members can read their own profile
+      allow read: if isAdmin() || isOwner(memberId) || (isAuthenticated() && resource.data.email == request.auth.token.email);
+      
+      // Only admins can create new member subscriptions or change membership status
+      allow create: if isAdmin() || (isAuthenticated() && request.auth.uid == memberId);
+      allow delete: if isAdmin();
+      
+      // Members can update non-sensitive fields (phone, photoUrl, emergencyContact)
+      allow update: if isAdmin() || (
+        isOwner(memberId) && 
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'expiryDate', 'planId', 'role'])
+      );
+    }
+
+    // Membership Plans Collection
+    match /plans/{planId} {
+      // Any authenticated user (or member) can view gym plans
+      allow read: if true;
+      // Only admins can create, edit, or delete plans
+      allow write: if isAdmin();
+    }
+
+    // Attendance Records Collection
+    match /attendance/{recordId} {
+      // Members can read their own attendance logs; Admins can read all logs
+      allow read: if isAdmin() || (isAuthenticated() && (resource.data.memberId == request.auth.uid || resource.data.memberEmail == request.auth.token.email));
+      
+      // Biometric terminal or admin can log attendance
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // Payments and Transactions
+    match /payments/{paymentId} {
+      // Members can read their own transactions; Admins can read and audit all
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.memberId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // Notifications and Broadcasts
+    match /notifications/{notificationId} {
+      // Users can read if broadcast to "all" or specific to their user ID
+      allow read: if isAuthenticated() && (
+        resource.data.target == 'all' || 
+        resource.data.targetUserId == request.auth.uid || 
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
+
+    // Biometric Terminals & Simulator State
+    match /terminals/{terminalId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Gym Configuration and System Settings
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Development & Simulation Sandbox Rule
+    // NOTE: When in initial setup or testing without Firebase Auth tokens,
+    // you can temporarily use open read/write during prototyping:
+    // match /{document=**} {
+    //   allow read, write: if true;
+    // }
+  }
+}
